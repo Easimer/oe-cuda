@@ -14,7 +14,7 @@ __global__ void szorzas_single_threaded() {
 
 __global__ void szorzas(int mennyivel) {
     int i = threadIdx.x;
-    dev_A[i] *= 2;
+    dev_A[i] *= mennyivel;
 }
 
 static void print_results(int res[5], char const *title) {
