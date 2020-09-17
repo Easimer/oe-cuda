@@ -1,0 +1,8 @@
+=== 1CPU ===
+FAIL
+=== 1GPU ===
+FAIL
+=== N-M+1 GPU ===
+FAIL
+=== M*(N-M+1) GPU ===
+FAIL
