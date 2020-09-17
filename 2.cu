@@ -11,6 +11,9 @@
 
 #define SIZE_T_SENTINEL (std::numeric_limits<size_t>::max())
 
+static long g_printtime = 0;
+static long g_printtext = 0;
+
 __global__ void k_szokereses_1gpu(
         size_t *res,
         char const *szo, size_t szo_len,
@@ -39,7 +42,7 @@ __global__ void k_szokereses_nm1gpu(
 
     // Siman lehet, hogy ehhez a szalhoz nem tartozik a mondatban karakter
     // Az ilyen szalat nem hagyjuk futni.
-    if(base >= mondat_len - szo_len) {
+    if(base >= mondat_len - szo_len + 1) {
         return;
     }
 
@@ -60,7 +63,7 @@ __global__ void k_szokereses_mxnm1gpu(
 
     // Siman lehet, hogy ehhez a szalhoz nem tartozik a mondatban karakter
     // Az ilyen szalat nem hagyjuk futni.
-    if(x >= mondat_len - szo_len) {
+    if(x >= mondat_len - szo_len + 1) {
         return;
     }
 
@@ -322,16 +325,19 @@ static void exec_impl(
     auto t_end = std::chrono::system_clock::now();
     auto t_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start);
 
-    printf("Elapsed: %zu ms\n", t_elapsed.count());
+    if(g_printtime) {
+        printf("Elapsed: %zu ms\n", t_elapsed.count());
+    }
 
     if(rc) {
-        printf("? '%s' \\in '", szo);
-        print_subseq_bold(mondat, mondat_len, idx, idx + szo_len);
-        printf("'\n");
+        if(g_printtext) {
+            printf("? '%s' \\in '", szo);
+            print_subseq_bold(mondat, mondat_len, idx, idx + szo_len);
+            printf("'\n");
+        }
 
         printf("OK %zu\n", idx);
     } else {
-        //printf("? '%s' \\in '%s'\n", szo, mondat);
         printf("FAIL\n");
     }
 }
@@ -372,6 +378,8 @@ int main(int argc, char **argv) {
         { "-m", &a_mondat, ARG_STRING },
         { "-f", &a_fajl, ARG_STRING },
         { "-r", &a_reps, ARG_LONG },
+        { "-t", &g_printtime, ARG_LONG },
+        { "-e", &g_printtext, ARG_LONG },
         { NULL, NULL },
     };
 
@@ -390,7 +398,7 @@ int main(int argc, char **argv) {
             szo = a_szo;
         }
     } else {
-        printf("Hasznalat: %s [-sz szo] [-m mondat | -f fajl] [-r reps]\n", argv[0]);
+        printf("Hasznalat: %s [-sz szo] [-m mondat | -f fajl] [-r reps] [-t 0/1] [-e 0/1]\n", argv[0]);
         return EXIT_FAILURE;
     }
 
