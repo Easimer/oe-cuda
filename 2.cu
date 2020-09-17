@@ -6,9 +6,76 @@
 #include <chrono>
 
 #include <cuda_runtime.h>
+#include "helper.cuh"
 
 #define SIZE_T_SENTINEL (std::numeric_limits<size_t>::max())
 
+__global__ void k_szokereses_1gpu(
+        size_t *res,
+        char const *szo, size_t szo_len,
+        char const *mondat, size_t mondat_len) {
+    // 1CPU impl masolata
+    auto base_max = mondat_len - szo_len + 1;
+
+    for(size_t base = 0; base < base_max; base++) {
+        bool found = true;
+        for(size_t off = 0; off < szo_len; off++) {
+            found &= (mondat[base + off] == szo[off]);
+        }
+
+        if(found) {
+            *res = base;
+            return;
+        }
+    }
+}
+
+__global__ void k_szokereses_nm1gpu(
+        int *res,
+        char const *szo, size_t szo_len,
+        char const *mondat, size_t mondat_len) {
+    auto base = blockDim.x * blockIdx.x + threadIdx.x;
+
+    // Siman lehet, hogy ehhez a szalhoz nem tartozik a mondatban karakter
+    // Az ilyen szalat nem hagyjuk futni.
+    if(base >= mondat_len - szo_len) {
+        return;
+    }
+
+    for(size_t i = 0; i < szo_len; i++) {
+        if(mondat[base + i] != szo[i]) {
+            res[base] = 0;
+            break;
+        }
+    }
+}
+
+__global__ void k_szokereses_mxnm1gpu(
+        int *res,
+        char const *szo, size_t szo_len,
+        char const *mondat, size_t mondat_len) {
+    auto x = blockDim.x * blockIdx.x + threadIdx.x;
+    auto y = blockDim.y * blockIdx.y + threadIdx.y;
+
+    // Siman lehet, hogy ehhez a szalhoz nem tartozik a mondatban karakter
+    // Az ilyen szalat nem hagyjuk futni.
+    if(x >= mondat_len - szo_len) {
+        return;
+    }
+
+    // Siman lehet, hogy ehhez a szalhoz nem tartozik a szoban karakter
+    // Az ilyen szalat nem hagyjuk futni.
+    if(y >= szo_len) {
+        return;
+    }
+
+    // Ha a karakterek nem egyeznek, lehuzzuk nullara az eredmeny tombben az flaget.
+    if(szo[y] != mondat[x + y]) {
+        res[x] = 0;
+    }
+}
+
+// 1-szalas CPU implementacio
 static bool szokereses_1cpu(
         size_t *res,
         char const *szo, size_t szo_len,
@@ -30,62 +97,6 @@ static bool szokereses_1cpu(
     }
 
     return false;
-}
-
-__global__ void k_szokereses_1gpu(
-        size_t *res,
-        char const *szo, size_t szo_len,
-        char const *mondat, size_t mondat_len) {
-    auto base_max = mondat_len - szo_len + 1;
-    for(size_t base = 0; base < base_max; base++) {
-        bool found = true;
-        for(size_t off = 0; off < szo_len; off++) {
-            found &= (mondat[base + off] == szo[off]);
-        }
-
-        if(found) {
-            *res = base;
-            return;
-        }
-    }
-}
-
-__global__ void k_szokereses_nm1gpu(
-        int *res,
-        char const *szo, size_t szo_len,
-        char const *mondat, size_t mondat_len) {
-    auto base = blockDim.x * blockIdx.x + threadIdx.x;
-    if(base > mondat_len - szo_len) {
-        res[base] = 0;
-        return;
-    }
-
-    for(size_t i = 0; i < szo_len; i++) {
-        if(mondat[base + i] != szo[i]) {
-            res[base] = 0;
-            break;
-        }
-    }
-}
-
-__global__ void k_szokereses_mxnm1gpu(
-        int *res,
-        char const *szo, size_t szo_len,
-        char const *mondat, size_t mondat_len) {
-    auto x = blockDim.x * blockIdx.x + threadIdx.x;
-    auto y = blockDim.y * blockIdx.y + threadIdx.y;
-
-    if(x >= mondat_len - szo_len) {
-        return;
-    }
-
-    if(y >= szo_len) {
-        return;
-    }
-
-    if(szo[y] != mondat[x + y]) {
-        res[x] = 0;
-    }
 }
 
 // 1-szalas GPU implementacio
@@ -122,49 +133,62 @@ static bool szokereses_nm1gpu(
         char const *h_szo, size_t szo_len,
         char const *h_mondat, size_t mondat_len) {
     char *d_szo, *d_mondat;
-    int *h_res, *d_res;
+    int *d_res;
+    // thread_dim: szukseges parhuzamossag az X-dimenzioban
     auto thread_dim = mondat_len - szo_len + 1;
+    // result_len: az eredmenytomb hossza bajtokban
     auto result_len = thread_dim * sizeof(int);
     bool ret = false;
 
     cudaMalloc(&d_szo, szo_len);
     cudaMalloc(&d_mondat, mondat_len);
     cudaMalloc(&d_res, result_len);
-    // ha mar muszaj mallocolni a hoston is, akkor pinneljuk azt a szart
-    cudaMallocHost(&h_res, result_len);
+
+    // Lefoglalunk memoriat, ami lehet pinnelt, lehet nem (input merettol fugg, hogy a runtime engedi-e)
+    Maybe_Pinned<int> h_res(thread_dim);
 
     // inicializaljuk a result tombot
     for(size_t i = 0; i < thread_dim; i++) {
         h_res[i] = 1;
     }
 
+    // Felmasoljuk az adatokat
     cudaMemcpy(d_szo, h_szo, szo_len, cudaMemcpyHostToDevice);
     cudaMemcpy(d_mondat, h_mondat, mondat_len, cudaMemcpyHostToDevice);
     cudaMemcpy(d_res, h_res, result_len, cudaMemcpyHostToDevice);
 
+    // Gridet meg nem tanultuk, de eleg nagy bemeneteknel elerem a block meret limitet :(
+    // Roviden: mivel a blokkmeret max 1024, ezert 1024x1-es blokkot hasznalunk es
+    // a grid meretet ehhez igazitjuk.
+    // Mivel a grid mereteinek legalabb 1-nek kell lennie, ezert felfele kerekitunk.
     size_t block_size = 1024;
     size_t grid_size = ceil(thread_dim / (double)block_size);
 
-    // Gridet meg nem tanultuk, de eleg nagy bemeneteknel elerem a block meret limitet :(
-    printf("kernel<<<%zu, %zu>>>()\n", grid_size, block_size);
+    // Kernel dispatch
     k_szokereses_nm1gpu<<<grid_size, block_size>>>(d_res, d_szo, szo_len, d_mondat, mondat_len);
-    auto kernel_failed = cudaPeekAtLastError() != 0;
-    printf("nm1gpu rc=%d\n", cudaPeekAtLastError());
 
+    auto kernel_failed = cudaPeekAtLastError() != 0;
+    if(kernel_failed) {
+        printf("nm1gpu rc=%d\n", cudaGetLastError());
+    }
+
+    // Eredmenyt visszamasoljuk, adatokat felszabaditjuk
     cudaMemcpy(h_res, d_res, result_len, cudaMemcpyDeviceToHost);
     cudaFree(d_res);
     cudaFree(d_mondat);
     cudaFree(d_szo);
 
-    for(size_t i = 0; i < thread_dim; i++) {
-        if(h_res[i] != 0) {
-            *h_idx = i;
-            ret = true;
-            break;
+    if(!kernel_failed) {
+        // Ha sikeresen lefutott a program, akkor kikeressuk az elso talalatot.
+        for(size_t i = 0; i < thread_dim; i++) {
+            // Ahol matcheltunk, oda egyest irtunk.
+            if(h_res[i] == 1) {
+                *h_idx = i;
+                ret = true;
+                break;
+            }
         }
     }
-
-    cudaFreeHost(h_res);
 
     return ret;
 }
@@ -175,26 +199,34 @@ static bool szokereses_mxnm1gpu(
         char const *h_szo, size_t szo_len,
         char const *h_mondat, size_t mondat_len) {
     char *d_szo, *d_mondat;
-    int *h_res, *d_res;
+    int *d_res;
+    // thread_dim: szukseges parhuzamossag az X-dimenzioban
     auto thread_dim = mondat_len - szo_len + 1;
+    // result_len: az eredmenytomb hossza bajtokban
     auto result_len = thread_dim * sizeof(int);
     bool ret = false;
 
     cudaMalloc(&d_szo, szo_len);
     cudaMalloc(&d_mondat, mondat_len);
     cudaMalloc(&d_res, result_len);
-    // ha mar muszaj mallocolni a hoston is, akkor pinneljuk azt a szart
-    cudaMallocHost(&h_res, result_len);
+
+    // Lefoglalunk memoriat, ami lehet pinnelt, lehet nem (input merettol fugg, hogy a runtime engedi-e)
+    Maybe_Pinned<int> h_res(thread_dim);
 
     // inicializaljuk a result tombot
     for(size_t i = 0; i < thread_dim; i++) {
         h_res[i] = 1;
     }
 
+    // Felmasoljuk az adatokat
     cudaMemcpy(d_szo, h_szo, szo_len, cudaMemcpyHostToDevice);
     cudaMemcpy(d_mondat, h_mondat, mondat_len, cudaMemcpyHostToDevice);
     cudaMemcpy(d_res, h_res, result_len, cudaMemcpyHostToDevice);
 
+    // Gridet meg nem tanultuk, de eleg nagy bemeneteknel elerem a block meret limitet :(
+    // Roviden: mivel a blokkmeret max 1024, ezert 512x2-es blokkot hasznalunk es
+    // a grid meretet ehhez igazitjuk.
+    // Mivel a grid mereteinek legalabb 1-nek kell lennie, ezert felfele kerekitunk.
     auto block_size_x = 512;
     auto block_size_y = 2;
     auto grid_size_x = (long long)ceil(thread_dim / (double)block_size_x);
@@ -203,19 +235,24 @@ static bool szokereses_mxnm1gpu(
     dim3 grid_size(grid_size_x, grid_size_y);
     dim3 block_size(block_size_x, block_size_y);
 
-    // Gridet meg nem tanultuk, de eleg nagy bemeneteknel elerem a block meret limitet :(
-    printf("kernel<<<(%zu, %zu), (%zu, %zu)>>>()\n", grid_size_x, grid_size_y, block_size_x, block_size_y);
+    // Kernel dispatch
     k_szokereses_mxnm1gpu<<<grid_size, block_size>>>(d_res, d_szo, szo_len, d_mondat, mondat_len);
-    auto kernel_failed = cudaPeekAtLastError() != 0;
-    printf("mxnm1gpu rc=%d\n", cudaPeekAtLastError());
 
+    auto kernel_failed = cudaPeekAtLastError() != 0;
+    if(kernel_failed) {
+        printf("mxnm1gpu rc=%d\n", cudaGetLastError());
+    }
+
+    // Eredmenyt visszamasoljuk, adatokat felszabaditjuk
     cudaMemcpy(h_res, d_res, result_len, cudaMemcpyDeviceToHost);
     cudaFree(d_res);
     cudaFree(d_mondat);
     cudaFree(d_szo);
 
     if(!kernel_failed) {
+        // Ha sikeresen lefutott a program, akkor kikeressuk az elso talalatot.
         for(size_t i = 0; i < thread_dim; i++) {
+            // Ahol nincs match, oda nullat irtunk. Tehat nullatol kulonbozo erteket keresunk.
             if(h_res[i] != 0) {
                 *h_idx = i;
                 ret = true;
@@ -223,8 +260,6 @@ static bool szokereses_mxnm1gpu(
             }
         }
     }
-
-    cudaFreeHost(h_res);
 
     return ret;
 }
@@ -269,6 +304,7 @@ static void print_subseq_bold(char const *s, size_t len, size_t from, size_t to)
     }
 }
 
+// Vegrehajt egy implementaciot es kiirja az eredmenyeket
 static void exec_impl(
         char const *nev,
         char const *szo, size_t szo_len,
@@ -299,6 +335,7 @@ static void exec_impl(
     }
 }
 
+// Betolt egy egesz fajlt pinned memoriaba
 static char const* load_src(char const *path) {
     FILE* f = fopen(path, "rb");
     if(f == NULL) {
@@ -311,38 +348,106 @@ static char const* load_src(char const *path) {
     char *buf = NULL;
     cudaMallocHost(&buf, len + 1);
 
-    fread(buf, 1, len, f);
+    auto rd = fread(buf, 1, len, f);
+    buf[rd] = '\0';
+    buf[len] = '\0';
     fclose(f);
 
     return buf;
 }
 
-int main(int argc, char **argv) {
-    char const *szo, *mondat;
+// Argumentum feldolgozo
+struct arg_decl {
+    char const *flag;
+    char const **outparam;
+};
 
-    if(argc == 4) {
-        // ./2.exe szo -c forras.txt
-        mondat = load_src(argv[3]);
-        if(mondat == NULL) {
-            fprintf(stderr, "Nem sikerult kiolvasni: '%s'\n", argv[3]);
-            return EXIT_FAILURE;
+static bool parse_args(
+        int argc,
+        char **argv,
+        arg_decl const *args) {
+    bool ret = true;
+
+    arg_decl const *ad = &args[0];
+    while(ad->flag != NULL) {
+        *ad->outparam = NULL;
+        ad++;
+    }
+
+    for(int i = 1; i < argc; i++) {
+        ad = &args[0];
+        while(ret && ad->flag != NULL) {
+            if(strcmp(argv[i], ad->flag) == 0) {
+                if(i + 1 < argc) {
+                    *ad->outparam = argv[i + 1];
+                    i++;
+                    break;
+                } else {
+                    ret = false;
+                }
+            }
+
+            ad++;
         }
-        szo = argv[1];
-    } else if(argc == 3 || argc == 1) {
-        // ./2.exe szo mondat 
-        szo =
-            (argc > 1 && argv[1]) ? argv[1] : "szo";
-        mondat =
-            (argc > 2 && argv[2]) ? argv[2] : "asziszoo";
+
+        if(ad->flag == NULL) {
+            ret = false;
+        }
+    }
+
+    return ret;
+}
+
+// Program entry
+int main(int argc, char **argv) {
+    char const *szo = "szo";
+    char const *mondat = "asziszoo";
+    int reps = 1;
+    char const *a_szo;
+    char const *a_mondat;
+    char const *a_fajl;
+    char const *a_reps;
+
+    // Argumentumok feldolgozasa
+    arg_decl const argdecls[] = {
+        { "-sz", &a_szo },
+        { "-m", &a_mondat },
+        { "-f", &a_fajl },
+        { "-r", &a_reps },
+        { NULL, NULL },
+    };
+
+    if(parse_args(argc, argv, argdecls)) {
+        if(a_fajl != NULL) {
+            mondat = load_src(a_fajl);
+            if(mondat == NULL) {
+                fprintf(stderr, "Nem sikerult kiolvasni: '%s'\n", argv[3]);
+                return EXIT_FAILURE;
+            }
+        } else if(a_mondat != NULL) {
+            mondat = a_mondat;
+        }
+
+        if(a_szo != NULL) {
+            szo = a_szo;
+        }
+
+        if(a_reps != NULL) {
+            sscanf(a_reps, "%d", &reps);
+        }
     } else {
+        printf("Hasznalat: %s [-sz szo] [-m mondat | -f fajl] [-r reps]\n", argv[0]);
         return EXIT_FAILURE;
     }
 
-    for(int i = 0; i < 16; i++) {
-        exec_impl("1CPU", szo, strlen(szo), mondat, strlen(mondat), &szokereses_1cpu);
-        // exec_impl("1GPU", szo, strlen(szo), mondat, strlen(mondat), &szokereses_1gpu);
-        exec_impl("N-M+1 GPU", szo, strlen(szo), mondat, strlen(mondat), &szokereses_nm1gpu);
-        exec_impl("M*(N-M+1) GPU", szo, strlen(szo), mondat, strlen(mondat), &szokereses_mxnm1gpu);
+    // Kulonbozo implementaciok elinditasa
+    auto mondat_len = strlen(mondat);
+    auto szo_len = strlen(szo);
+    for(int i = 0; i < reps; i++) {
+        exec_impl("1CPU",           szo, szo_len, mondat, mondat_len, &szokereses_1cpu);
+        exec_impl("1GPU",           szo, szo_len, mondat, mondat_len, &szokereses_1gpu);
+        exec_impl("N-M+1 GPU",      szo, szo_len, mondat, mondat_len, &szokereses_nm1gpu);
+        exec_impl("M*(N-M+1) GPU",  szo, szo_len, mondat, mondat_len, &szokereses_mxnm1gpu);
     }
 
     return 0;
