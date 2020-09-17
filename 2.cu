@@ -7,6 +7,7 @@
 
 #include <cuda_runtime.h>
 #include "helper.cuh"
+#include "arg_parse.h"
 
 #define SIZE_T_SENTINEL (std::numeric_limits<size_t>::max())
 
@@ -356,64 +357,21 @@ static char const* load_src(char const *path) {
     return buf;
 }
 
-// Argumentum feldolgozo
-struct arg_decl {
-    char const *flag;
-    char const **outparam;
-};
-
-static bool parse_args(
-        int argc,
-        char **argv,
-        arg_decl const *args) {
-    bool ret = true;
-
-    arg_decl const *ad = &args[0];
-    while(ad->flag != NULL) {
-        *ad->outparam = NULL;
-        ad++;
-    }
-
-    for(int i = 1; i < argc; i++) {
-        ad = &args[0];
-        while(ret && ad->flag != NULL) {
-            if(strcmp(argv[i], ad->flag) == 0) {
-                if(i + 1 < argc) {
-                    *ad->outparam = argv[i + 1];
-                    i++;
-                    break;
-                } else {
-                    ret = false;
-                }
-            }
-
-            ad++;
-        }
-
-        if(ad->flag == NULL) {
-            ret = false;
-        }
-    }
-
-    return ret;
-}
-
 // Program entry
 int main(int argc, char **argv) {
-    char const *szo = "szo";
-    char const *mondat = "asziszoo";
-    int reps = 1;
-    char const *a_szo;
-    char const *a_mondat;
-    char const *a_fajl;
-    char const *a_reps;
+    char const *szo = NULL;
+    char const *mondat = NULL;
+    char const *a_szo = "szo";
+    char const *a_mondat = "asziszoo";
+    char const *a_fajl = NULL;
+    long a_reps = 1;
 
     // Argumentumok feldolgozasa
     arg_decl const argdecls[] = {
-        { "-sz", &a_szo },
-        { "-m", &a_mondat },
-        { "-f", &a_fajl },
-        { "-r", &a_reps },
+        { "-sz", &a_szo, ARG_STRING },
+        { "-m", &a_mondat, ARG_STRING },
+        { "-f", &a_fajl, ARG_STRING },
+        { "-r", &a_reps, ARG_LONG },
         { NULL, NULL },
     };
 
@@ -431,10 +389,6 @@ int main(int argc, char **argv) {
         if(a_szo != NULL) {
             szo = a_szo;
         }
-
-        if(a_reps != NULL) {
-            sscanf(a_reps, "%d", &reps);
-        }
     } else {
         printf("Hasznalat: %s [-sz szo] [-m mondat | -f fajl] [-r reps]\n", argv[0]);
         return EXIT_FAILURE;
@@ -443,7 +397,7 @@ int main(int argc, char **argv) {
     // Kulonbozo implementaciok elinditasa
     auto mondat_len = strlen(mondat);
     auto szo_len = strlen(szo);
-    for(int i = 0; i < reps; i++) {
+    for(int i = 0; i < a_reps; i++) {
         exec_impl("1CPU",           szo, szo_len, mondat, mondat_len, &szokereses_1cpu);
         exec_impl("1GPU",           szo, szo_len, mondat, mondat_len, &szokereses_1gpu);
         exec_impl("N-M+1 GPU",      szo, szo_len, mondat, mondat_len, &szokereses_nm1gpu);
