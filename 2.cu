@@ -166,7 +166,7 @@ static bool szokereses_nm1gpu(
     // a grid meretet ehhez igazitjuk.
     // Mivel a grid mereteinek legalabb 1-nek kell lennie, ezert felfele kerekitunk.
     size_t block_size = 1024;
-    size_t grid_size = ceil(thread_dim / (double)block_size);
+    size_t grid_size = (thread_dim - 1) / block_size + 1;
 
     // Kernel dispatch
     k_szokereses_nm1gpu<<<grid_size, block_size>>>(d_res, d_szo, szo_len, d_mondat, mondat_len);
@@ -233,8 +233,8 @@ static bool szokereses_mxnm1gpu(
     // Mivel a grid mereteinek legalabb 1-nek kell lennie, ezert felfele kerekitunk.
     auto block_size_x = 512;
     auto block_size_y = 2;
-    auto grid_size_x = (long long)ceil(thread_dim / (double)block_size_x);
-    auto grid_size_y = (long long)ceil(szo_len / (double)block_size_y);
+    auto grid_size_x = (thread_dim - 1) / block_size_x + 1;
+    auto grid_size_y = (szo_len - 1) / block_size_y + 1;
 
     dim3 grid_size(grid_size_x, grid_size_y);
     dim3 block_size(block_size_x, block_size_y);
