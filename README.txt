@@ -62,3 +62,9 @@ Feladatleírások:
 | 3        | 2.cu             | Előző heti feladatok átírása úgy, hogy         |
 |          |                  | több blokkot használjanak.                     |
 +----------+------------------+------------------------------------------------+
+| 4.1      | 4_1.cu           | String-ben string keresés, M*(N-M+1) variáció, |
+|          |                  | shared memóriával. (csak a szó shared)         |
+|          |                  |                                                |
++----------+------------------+------------------------------------------------+
+| 4.2      | 4_2.cu           | Rendezés shared memóriával (egy blokk)         |
++----------+------------------+------------------------------------------------+
