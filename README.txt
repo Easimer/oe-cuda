@@ -74,3 +74,10 @@ Feladatleírások:
 +----------+------------------+------------------------------------------------+
 | 6.2      | 6_2.cu           | Tiled matrix-szorzas                           |
 +----------+------------------+------------------------------------------------+
+| 7        | 7.cu             | Minimum kereses                                |
+|          |                  | 1. 1 CPU szalon                                |
+|          |                  | 2. 1 GPU szalon                                |
+|          |                  | 3. N GPU szalon, atomi muveletekkel            |
+|          |                  | 4. N GPU szalon, parhuzamos redukcioval,       |
+|          |                  | shared memoriaval, tobb blokkban               |
++----------+------------------+------------------------------------------------+
